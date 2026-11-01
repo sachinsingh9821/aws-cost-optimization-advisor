@@ -1,4 +1,4 @@
-"""Pydantic models for input resources.
+"""Pydantic models for input resources and analysis outputs.
 
 Design rules enforced here:
 - Missing data stays missing: CPU points and prices are nullable, never defaulted to 0.
@@ -82,3 +82,91 @@ class Resource(BaseModel):
             if bad:
                 raise ValueError(f"cpu_hourly contains values outside 0-100: {bad[:3]}")
         return self
+
+
+# ---------------------------------------------------------------------------
+# Analysis outputs
+# ---------------------------------------------------------------------------
+
+
+class Category(StrEnum):
+    RIGHTSIZING = "rightsizing"
+    SCHEDULED_SHUTDOWN = "scheduled_shutdown"
+
+
+class Outcome(StrEnum):
+    RECOMMEND = "RECOMMEND"
+    NO_ACTION = "NO_ACTION"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    NEEDS_HUMAN_REVIEW = "NEEDS_HUMAN_REVIEW"
+
+
+class EvidenceQuality(StrEnum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class RiskLevel(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class Evidence(BaseModel):
+    """Measured facts about a resource's metrics. None = could not be measured."""
+
+    model_config = ConfigDict(frozen=True)
+
+    coverage_days: float
+    points_expected: int
+    points_present: int
+    completeness: float
+    staleness_hours: float | None
+    mean_cpu_pct: float | None
+    p95_cpu_pct: float | None
+    max_cpu_pct: float | None
+    off_hours_mean_cpu_pct: float | None
+
+
+class SavingsEstimate(BaseModel):
+    """An ESTIMATED saving: a prediction under stated assumptions, never a realized one."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["estimated"] = "estimated"
+    monthly_usd: float | None
+    formula: str
+    inputs: dict[str, float | str | None]
+    cannot_estimate_reason: str | None = None
+
+
+class Assessment(BaseModel):
+    """Result of applying one rule category to one resource.
+
+    Assessments with outcome RECOMMEND or NEEDS_HUMAN_REVIEW are the "recommendations"
+    shown to users; NO_ACTION and INSUFFICIENT_DATA are kept so every decision is auditable.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    resource_id: str
+    category: Category
+    outcome: Outcome
+    problem: str
+    evidence: Evidence
+    rule_triggered: str
+    evidence_quality: EvidenceQuality
+    risk_level: RiskLevel | None
+    risks: list[str]
+    savings: SavingsEstimate | None
+    proposed_instance_type: str | None
+    assumptions: list[str]
+    missing_info: list[str]
+    next_step: str
+    human_review_required: bool
+
+    @property
+    def is_recommendation(self) -> bool:
+        return self.outcome in (Outcome.RECOMMEND, Outcome.NEEDS_HUMAN_REVIEW)
