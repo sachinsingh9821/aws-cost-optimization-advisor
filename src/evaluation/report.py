@@ -33,6 +33,7 @@ from src.evaluation.metrics import (
     check_savings,
     class_metrics,
     confusion_matrix,
+    safe_div,
 )
 from src.rules.engine import assess_all
 from src.schema import Assessment, Category, Criticality, EvidenceQuality, Outcome, Resource
@@ -83,6 +84,7 @@ class EvaluationResult:
     misses: list[Miss]
     predictions: dict[str, Any]
     prediction_rows: list[dict[str, str]] = field(default_factory=list)
+    n_ambiguous_resources: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +314,7 @@ def run_evaluation(
         predictions=predictions,
     )
     result.prediction_rows = _prediction_rows(predictions, misses)
+    result.n_ambiguous_resources = sum(labels[i]["ambiguous"] == "true" for i in ids)
     return result
 
 
@@ -450,6 +453,23 @@ def render_markdown(r: EvaluationResult) -> str:
     )
     w(f"- Safety-invariant violations: **{total_violations}**.")
     w(f"- Misses not pre-registered: **{len(unpredicted)}**.")
+    w("")
+    w("### By subset")
+    w("")
+    w("Non-ambiguous scenarios mostly check that the code implements its own specification;")
+    w("the deliberately ambiguous/boundary scenarios are the informative part.")
+    w("")
+    subset_rows = []
+    for name, amb, n_res in [
+        ("Non-ambiguous", False, r.n_resources - r.n_ambiguous_resources),
+        ("Ambiguous / boundary", True, r.n_ambiguous_resources),
+    ]:
+        n_dec = 2 * n_res
+        wrong = sum(1 for m in r.misses if m.category != "evidence_quality" and m.ambiguous == amb)
+        subset_rows.append(
+            [name, n_res, n_dec, n_dec - wrong, wrong, _f(safe_div(n_dec - wrong, n_dec))]
+        )
+    w(_table(["Subset", "Resources", "Decisions", "Correct", "Misses", "Accuracy"], subset_rows))
     w("")
     w("`n/a` means the metric is undefined (zero denominator): precision is undefined when")
     w("the rules never output that class; recall when the class never occurs in the labels.")
