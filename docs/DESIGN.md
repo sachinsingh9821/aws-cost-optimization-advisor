@@ -62,8 +62,15 @@ Every resource gets one `Assessment` per rule. Order of checks (first match wins
 | 1 | Data-quality gate fails → `INSUFFICIENT_DATA` | same |
 | 2 | Not (mean < 10% **and** p95 < 30%) → `NO_ACTION` | prod → `NO_ACTION` |
 | 3 | No smaller size on ladder → `NO_ACTION` | not tagged `schedule_eligible` → `NO_ACTION` |
-| 4 | **critical → `NEEDS_HUMAN_REVIEW`** | **critical → `NEEDS_HUMAN_REVIEW`** |
-| 5 | → `RECOMMEND` | already within schedule → `NO_ACTION`, else `RECOMMEND` |
+| 4 | **critical → `NEEDS_HUMAN_REVIEW`** | already within schedule → `NO_ACTION` |
+| 5 | *v2, C1:* projected peak (2 × max) ≥ 100% → `NEEDS_HUMAN_REVIEW` | **critical → `NEEDS_HUMAN_REVIEW`** |
+| 6 | → `RECOMMEND` | *v2, C2:* off-hours mean CPU > 5% (or unknown) → `NEEDS_HUMAN_REVIEW` |
+| 7 | | → `RECOMMEND` |
+
+C1 and C2 were added after the v1 evaluation (see `docs/EVALUATION.md` §5-7). Both are
+config values in `config/thresholds.yaml`; setting them to `null` restores v1 exactly.
+In v2, risk signals that show the action would fail now change the outcome, not just
+the ranking.
 
 ## 5. Deliberate deviation from the spec: when criticality is checked ✅
 
