@@ -33,7 +33,7 @@ data/synthetic/resources.json ──► src/data/loader ──► Resource (Pyda
             src/cost/engine ◄───────────┼──────────► src/ranking/prioritize
             (spend, breakdowns)         │            (lexicographic order + reason)
                                         ▼
-            ⏳ src/evaluation (vs data/labels)   ⏳ app.py (Streamlit, display only)
+            src/evaluation (vs labels written first)   app.py (Streamlit, display only)
 ```
 
 All business logic lives in pure, type-hinted functions under `src/`. The UI is planned
@@ -128,10 +128,15 @@ improve any metric.
 | Fixed `as_of` timestamp | Wall-clock `now()` | Staleness, and so results, must be reproducible. |
 | Labels committed before rules | Labels written after | Git history (`37d481d`) shows labels could not have been fitted to rule output. |
 
-## 7. Planned ⏳
+## 7. Implemented since the first draft ✅
 
-- `src/evaluation/`: precision/recall/F1 per outcome class, confusion matrix, savings
-  absolute error vs hand-computed values, `reports/evaluation_report.md`.
-- `app.py`: Streamlit dashboard (Overview, Recommendations, Evaluation), display only.
-- Post-deadline (needs approval): deployment, cost anomaly detection, read-only AWS
-  adapters, optional LLM "explain this recommendation".
+- `src/evaluation/`: per-class precision/recall/F1, confusion matrices, savings absolute
+  error, v1-vs-v2 reports on the original and held-out sets (see `docs/EVALUATION.md`).
+- `src/dashboard/` + `app.py`: Streamlit dashboard (Overview, Cost analysis,
+  Recommendations with evidence drill-down, Evaluation, Settings). All data shaping is in
+  the tested view model; `app.py` only renders.
+
+## 8. Planned ⏳ (post-deadline, needs approval)
+
+Deployment, cost anomaly detection, read-only AWS adapters, optional LLM "explain this
+recommendation", and a relative off-hours check (C4). See the README roadmap.
