@@ -6,9 +6,11 @@ from datetime import timedelta
 
 import pytest
 
+from src.config import as_v1
 from src.rules.engine import assess_all, assess_resource
 from src.rules.evidence import compute_evidence, on_schedule_mask
 from src.rules.quality_gate import check_data_quality
+from src.rules.shutdown import assess_shutdown
 from src.schema import Category, EvidenceQuality, Outcome, Resource, RiskLevel
 from tests.conftest import AS_OF, make_raw
 
@@ -249,9 +251,17 @@ def test_rightsizing_insufficient_data(thresholds, pricing):
 # --- Scheduled shutdown -------------------------------------------------------
 
 
+def workhours_cpu(thresholds, on: float = 40.0, off: float = 1.0) -> list[float]:
+    mask = on_schedule_mask(res(), thresholds.scheduled_shutdown)
+    return [on if m else off for m in mask]
+
+
 def test_shutdown_recommends_eligible_dev(thresholds, pricing):
     r = res(
-        schedule_eligible=True, cpu=[40.0] * 720, instance_type="r5.xlarge", unit_price_hourly=0.26
+        schedule_eligible=True,
+        cpu=workhours_cpu(thresholds),
+        instance_type="r5.xlarge",
+        unit_price_hourly=0.26,
     )
     a = get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing)
     assert a.outcome == Outcome.RECOMMEND
@@ -270,11 +280,112 @@ def test_shutdown_never_infers_eligibility(thresholds, pricing):
     assert outcomes(r, thresholds, pricing)[Category.SCHEDULED_SHUTDOWN] == Outcome.NO_ACTION
 
 
-def test_shutdown_off_hours_activity_raises_risk(thresholds, pricing):
+def test_v1_shutdown_off_hours_activity_only_raises_risk(thresholds, pricing):
+    """v1 behaviour (C2 disabled): off-hours load raises risk but still recommends."""
     r = res(schedule_eligible=True, cpu=[30.0] * 720)
-    a = get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing)
+    a = get(r, Category.SCHEDULED_SHUTDOWN, as_v1(thresholds), pricing)
     assert a.outcome == Outcome.RECOMMEND
     assert a.risk_level == RiskLevel.MEDIUM
+    assert a.rule_triggered.startswith("SD-1")
+
+
+# --- v2 changes C1 / C2 (docs/EVALUATION.md section 5) ------------------------------
+
+
+def peak_cpu(peak: float) -> list[float]:
+    return [3.0] * 715 + [peak] * 5
+
+
+@pytest.mark.parametrize(
+    ("peak", "outcome"),
+    [
+        (45.0, Outcome.RECOMMEND),  # projected 90%: fits
+        (49.0, Outcome.RECOMMEND),  # projected 98%: tight but fits
+        (50.0, Outcome.NEEDS_HUMAN_REVIEW),  # projected 100%: boundary is inclusive
+        (96.0, Outcome.NEEDS_HUMAN_REVIEW),  # weekly-batch shape
+    ],
+)
+def test_c1_projected_peak_routes_to_review(thresholds, pricing, peak, outcome):
+    a = get(res(cpu=peak_cpu(peak)), Category.RIGHTSIZING, thresholds, pricing)
+    assert a.evidence.p95_cpu_pct < 30 and a.evidence.mean_cpu_pct < 10  # signal present
+    assert a.outcome == outcome
+    assert a.human_review_required is (outcome == Outcome.NEEDS_HUMAN_REVIEW)
+    assert a.rule_triggered.startswith("RS-2")
+
+
+def test_c1_review_keeps_savings_and_explains(thresholds, pricing):
+    a = get(res(cpu=peak_cpu(80.0)), Category.RIGHTSIZING, thresholds, pricing)
+    assert a.risk_level == RiskLevel.HIGH
+    assert a.savings.monthly_usd == pytest.approx(73.0)  # shown to the reviewer
+    assert any("cannot serve the observed peak" in x for x in a.risks)
+    assert "80.0% peak" in a.next_step
+
+
+def test_c1_critical_keeps_critical_next_step(thresholds, pricing):
+    a = get(
+        res(cpu=peak_cpu(80.0), criticality="critical"), Category.RIGHTSIZING, thresholds, pricing
+    )
+    assert a.outcome == Outcome.NEEDS_HUMAN_REVIEW
+    assert "critical" in a.next_step
+
+
+def test_c1_disabled_in_v1(thresholds, pricing):
+    a = get(res(cpu=peak_cpu(96.0)), Category.RIGHTSIZING, as_v1(thresholds), pricing)
+    assert a.outcome == Outcome.RECOMMEND
+    assert a.rule_triggered.startswith("RS-1")
+
+
+def test_c1_does_not_rescue_no_signal(thresholds, pricing):
+    a = get(res(cpu=[50.0] * 720), Category.RIGHTSIZING, thresholds, pricing)
+    assert a.outcome == Outcome.NO_ACTION  # C1 only refines a positive signal
+
+
+@pytest.mark.parametrize(
+    ("off", "outcome"),
+    [
+        (1.0, Outcome.RECOMMEND),
+        (4.0, Outcome.RECOMMEND),
+        (5.0, Outcome.RECOMMEND),  # strict ">": exactly 5% does not trigger
+        (5.5, Outcome.NEEDS_HUMAN_REVIEW),
+        (30.0, Outcome.NEEDS_HUMAN_REVIEW),
+    ],
+)
+def test_c2_off_hours_load_routes_to_review(thresholds, pricing, off, outcome):
+    r = res(schedule_eligible=True, cpu=workhours_cpu(thresholds, off=off))
+    a = get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing)
+    assert a.evidence.off_hours_mean_cpu_pct == off
+    assert a.outcome == outcome
+    assert a.human_review_required is (outcome == Outcome.NEEDS_HUMAN_REVIEW)
+    assert a.rule_triggered.startswith("SD-2")
+
+
+def test_c2_review_explains_and_keeps_savings(thresholds, pricing):
+    r = res(schedule_eligible=True, cpu=workhours_cpu(thresholds, off=20.0))
+    a = get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing)
+    assert a.risk_level == RiskLevel.HIGH
+    assert a.savings.monthly_usd is not None
+    assert any("eligibility tag may be wrong" in x for x in a.risks)
+    assert "what runs off-hours" in a.next_step
+
+
+def test_c2_unknown_off_hours_activity_is_not_assumed_quiet(thresholds, pricing):
+    r = res(schedule_eligible=True)
+    ev = compute_evidence(r, thresholds).model_copy(update={"off_hours_mean_cpu_pct": None})
+    gate = check_data_quality(ev, thresholds)
+    a = assess_shutdown(r, ev, gate, thresholds)
+    assert a.outcome == Outcome.NEEDS_HUMAN_REVIEW
+    assert any("could not be measured" in x for x in a.risks)
+
+
+def test_c2_never_infers_eligibility(thresholds, pricing):
+    r = res(schedule_eligible=False, cpu=workhours_cpu(thresholds, off=1.0))
+    assert outcomes(r, thresholds, pricing)[Category.SCHEDULED_SHUTDOWN] == Outcome.NO_ACTION
+
+
+def test_c2_disabled_in_v1(thresholds, pricing):
+    r = res(schedule_eligible=True, cpu=workhours_cpu(thresholds, off=20.0))
+    a = get(r, Category.SCHEDULED_SHUTDOWN, as_v1(thresholds), pricing)
+    assert a.outcome == Outcome.RECOMMEND
 
 
 def test_shutdown_already_within_schedule_no_action(thresholds, pricing):

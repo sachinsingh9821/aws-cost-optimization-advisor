@@ -15,9 +15,15 @@ from typing import Any
 
 import yaml
 
-from src.config import Pricing, Thresholds, load_pricing, load_thresholds
-from src.data.loader import load_resources
+from src.config import Pricing, Thresholds, as_v1, load_pricing, load_thresholds
+from src.data.generator import HELDOUT_OUT_DIR
+from src.data.loader import DEFAULT_PATH, load_resources
 from src.evaluation.labels import (
+    EXPECTED_SAVINGS_PATH,
+    HELDOUT_LABELS_PATH,
+    HELDOUT_MANIFEST_PATH,
+    LABELS_PATH,
+    MANIFEST_PATH,
     OUTCOMES,
     QUALITIES,
     REPO_ROOT,
@@ -38,8 +44,33 @@ from src.evaluation.metrics import (
 from src.rules.engine import assess_all
 from src.schema import Assessment, Category, Criticality, EvidenceQuality, Outcome, Resource
 
-REPORT_PATH = REPO_ROOT / "reports" / "evaluation_report.md"
+REPORT_PATH = REPO_ROOT / "reports" / "evaluation_report.md"  # current rules (v2)
+REPORT_V1_PATH = REPO_ROOT / "reports" / "evaluation_report_v1.md"  # frozen v1 results
 PREDICTIONS_PATH = REPO_ROOT / "data" / "labels" / "preregistered_predictions.yaml"
+V2_PREDICTIONS_PATH = REPO_ROOT / "data" / "heldout" / "preregistered_predictions_v2.yaml"
+
+
+@dataclass(frozen=True)
+class Dataset:
+    name: str
+    data_path: Path
+    labels_path: Path
+    manifest_path: Path
+    expected_savings_path: Path | None
+    predictions_path: Path | None
+
+
+ORIGINAL = Dataset(
+    "original", DEFAULT_PATH, LABELS_PATH, MANIFEST_PATH, EXPECTED_SAVINGS_PATH, PREDICTIONS_PATH
+)
+HELDOUT = Dataset(
+    "held-out",
+    HELDOUT_OUT_DIR / "resources.json",
+    HELDOUT_LABELS_PATH,
+    HELDOUT_MANIFEST_PATH,
+    None,
+    None,
+)
 
 LABEL_COLUMN = {
     Category.RIGHTSIZING: "expected_rightsizing",
@@ -85,6 +116,8 @@ class EvaluationResult:
     predictions: dict[str, Any]
     prediction_rows: list[dict[str, str]] = field(default_factory=list)
     n_ambiguous_resources: int = 0
+    outputs: dict[tuple[str, str], str] = field(default_factory=dict)  # (id, category) -> out
+    labels: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +255,15 @@ def _prediction_rows(predictions: dict[str, Any], misses: list[Miss]) -> list[di
 
 
 def run_evaluation(
-    thresholds: Thresholds | None = None, pricing: Pricing | None = None
+    thresholds: Thresholds | None = None,
+    pricing: Pricing | None = None,
+    dataset: Dataset = ORIGINAL,
 ) -> EvaluationResult:
     thresholds = thresholds or load_thresholds()
     pricing = pricing or load_pricing()
-    loaded = load_resources()
-    labels = {row["resource_id"]: row for row in read_ground_truth()}
-    manifest = read_manifest()
+    loaded = load_resources(dataset.data_path)
+    labels = {row["resource_id"]: row for row in read_ground_truth(dataset.labels_path)}
+    manifest = read_manifest(dataset.manifest_path)
 
     resource_ids = {r.resource_id for r in loaded.resources}
     if resource_ids != set(labels):
@@ -287,7 +322,12 @@ def run_evaluation(
             )
 
     savings = []
-    for row in read_expected_savings():
+    savings_rows = (
+        read_expected_savings(dataset.expected_savings_path)
+        if dataset.expected_savings_path
+        else []
+    )
+    for row in savings_rows:
         cat = CATEGORY_ALIASES[row["category"]]
         a = by_key[(row["resource_id"], cat)]
         expected = (
@@ -298,8 +338,10 @@ def run_evaluation(
         actual = a.savings.monthly_usd if a.savings else None
         savings.append(check_savings(row["resource_id"], str(cat), expected, actual))
 
-    with open(PREDICTIONS_PATH, encoding="utf-8") as f:
-        predictions = yaml.safe_load(f)
+    predictions: dict[str, Any] = {"predicted_misses": []}
+    if dataset.predictions_path:
+        with open(dataset.predictions_path, encoding="utf-8") as f:
+            predictions = yaml.safe_load(f)
 
     result = EvaluationResult(
         metadata=loaded.metadata,
@@ -315,6 +357,8 @@ def run_evaluation(
     )
     result.prediction_rows = _prediction_rows(predictions, misses)
     result.n_ambiguous_resources = sum(labels[i]["ambiguous"] == "true" for i in ids)
+    result.outputs = {(a.resource_id, str(a.category)): str(a.outcome) for a in assessments}
+    result.labels = labels
     return result
 
 
@@ -349,7 +393,12 @@ def _confusion_table(res: CategoryResult, classes: tuple[str, ...]) -> str:
     return _table(["Label \\ Rule output", *classes], rows)
 
 
-def render_markdown(r: EvaluationResult) -> str:
+def render_markdown(
+    r: EvaluationResult,
+    title: str = "Evaluation Report",
+    threshold_changes: str = "none",
+    include_predictions: bool = True,
+) -> str:
     t = r.thresholds
     md = r.metadata
     rs, sd = r.categories[Category.RIGHTSIZING], r.categories[Category.SCHEDULED_SHUTDOWN]
@@ -374,7 +423,7 @@ def render_markdown(r: EvaluationResult) -> str:
 
     out: list[str] = []
     w = out.append
-    w("# Evaluation Report")
+    w(f"# {title}")
     w("")
     w("> **SYNTHETIC DATA.** This report validates rule *logic* on synthetic, deliberately")
     w("> constructed scenarios. It is **not** a measure of real-world accuracy. Prices are")
@@ -409,7 +458,7 @@ def render_markdown(r: EvaluationResult) -> str:
                     f"{t.data_quality.max_staleness_hours:g} h stale",
                 ],
                 ["Labels", "written from scenario definitions and committed before the rules"],
-                ["Threshold changes after seeing results", "none"],
+                ["Threshold changes after seeing results", threshold_changes],
             ],
         )
     )
@@ -475,55 +524,79 @@ def render_markdown(r: EvaluationResult) -> str:
     w("the rules never output that class; recall when the class never occurs in the labels.")
     w("")
 
-    w("## 2. Pre-registered predictions")
-    w("")
-    w("Committed in `data/labels/preregistered_predictions.yaml` **before** the evaluation code")
-    w("existed. Prior knowledge at the time is disclosed in that file.")
-    w("")
-    w(
-        _table(
-            ["ID", "Resource", "Scenario", "Category", "Label", "Predicted output", "Reasoning"],
-            [
-                [
-                    p["id"],
-                    p["resource_id"],
-                    p["scenario"],
-                    p["category"],
-                    p["expected_label"],
-                    p["predicted_rule_output"],
-                    p["reasoning"],
-                ]
-                for p in r.predictions["predicted_misses"]
-            ],
+    if not include_predictions:
+        w("Sections 2-3 (v1 pre-registration) are in `reports/evaluation_report_v1.md`.")
+        w("")
+    if include_predictions:
+        w("## 2. Pre-registered predictions")
+        w("")
+        w(
+            "Committed in `data/labels/preregistered_predictions.yaml` **before** "
+            "the evaluation code"
         )
-    )
-    w("")
-    other = r.predictions.get("other_predictions", {})
-    for k, v in other.items():
-        w(f"- **{k}**: {v}")
-    w("")
+        w("existed. Prior knowledge at the time is disclosed in that file.")
+        w("")
+        w(
+            _table(
+                [
+                    "ID",
+                    "Resource",
+                    "Scenario",
+                    "Category",
+                    "Label",
+                    "Predicted output",
+                    "Reasoning",
+                ],
+                [
+                    [
+                        p["id"],
+                        p["resource_id"],
+                        p["scenario"],
+                        p["category"],
+                        p["expected_label"],
+                        p["predicted_rule_output"],
+                        p["reasoning"],
+                    ]
+                    for p in r.predictions["predicted_misses"]
+                ],
+            )
+        )
+        w("")
+        other = r.predictions.get("other_predictions", {})
+        for k, v in other.items():
+            w(f"- **{k}**: {v}")
+        w("")
 
-    w("## 3. Predicted vs actual misses")
-    w("")
-    w(
-        _table(
-            ["ID", "Resource", "Scenario", "Category", "Label", "Predicted", "Actual", "Result"],
-            [
+        w("## 3. Predicted vs actual misses")
+        w("")
+        w(
+            _table(
                 [
-                    x["id"],
-                    x["resource_id"],
-                    x["scenario"],
-                    x["category"],
-                    x["label"],
-                    x["predicted"],
-                    x["actual"],
-                    f"**{x['result']}**",
-                ]
-                for x in r.prediction_rows
-            ],
+                    "ID",
+                    "Resource",
+                    "Scenario",
+                    "Category",
+                    "Label",
+                    "Predicted",
+                    "Actual",
+                    "Result",
+                ],
+                [
+                    [
+                        x["id"],
+                        x["resource_id"],
+                        x["scenario"],
+                        x["category"],
+                        x["label"],
+                        x["predicted"],
+                        x["actual"],
+                        f"**{x['result']}**",
+                    ]
+                    for x in r.prediction_rows
+                ],
+            )
         )
-    )
-    w("")
+        w("")
 
     for cat, title in [
         (Category.RIGHTSIZING, "Rightsizing"),
@@ -665,18 +738,339 @@ def render_markdown(r: EvaluationResult) -> str:
     return "\n".join(out)
 
 
-def write_report(path: Path = REPORT_PATH) -> EvaluationResult:
-    result = run_evaluation()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(render_markdown(result))
-    return result
+# ---------------------------------------------------------------------------
+# v1 vs v2 comparison (changes C1 + C2)
+# ---------------------------------------------------------------------------
+
+
+def _outcome_misses(r: EvaluationResult) -> list[Miss]:
+    return [m for m in r.misses if m.category != "evidence_quality"]
+
+
+def _cls(r: EvaluationResult, cat: Category, label: str) -> ClassMetrics:
+    return next(m for m in r.categories[cat].metrics if m.label == label)
+
+
+def _prf(m: ClassMetrics) -> str:
+    return f"{_f(m.precision)} / {_f(m.recall)} / {_f(m.f1)}"
+
+
+def _acc(r: EvaluationResult, cat: Category) -> str:
+    res = r.categories[cat]
+    wrong = sum(1 for m in r.misses if m.category == str(cat))
+    return f"{_f(res.accuracy)} ({res.n - wrong}/{res.n})"
+
+
+def _counts(values: list[str]) -> str:
+    out: dict[str, int] = {}
+    for v in values:
+        out[v] = out.get(v, 0) + 1
+    return ", ".join(f"{k} x{n}" for k, n in sorted(out.items()))
+
+
+def render_comparison(runs: dict[tuple[str, str], EvaluationResult], v2_preds: dict) -> str:
+    """runs[(dataset_name, version)] -> result; version in {"v1", "v2"}."""
+    rs, sd = Category.RIGHTSIZING, Category.SCHEDULED_SHUTDOWN
+    out: list[str] = []
+    w = out.append
+    w("## A. Rules v1 vs v2")
+    w("")
+    w("- **v1** (`RS-1`, `SD-1`): the rules evaluated in `reports/evaluation_report_v1.md`.")
+    w("  Those results are frozen; the v1 rows below are recomputed by the same code with")
+    w("  C1/C2 disabled, and a test checks they reproduce the frozen report byte for byte.")
+    w("- **v2** (`RS-2`, `SD-2`) adds two approved changes, decided after the v1 evaluation:")
+    w("  - **C1**: rightsizing goes to `NEEDS_HUMAN_REVIEW` if projected peak (2 x max CPU)")
+    w("    >= 100%.")
+    w("  - **C2**: shutdown goes to `NEEDS_HUMAN_REVIEW` if off-hours mean CPU > 5% (or is")
+    w("    unknown).")
+    w("- **C3** (relax the 10% mean cutoff) was rejected; no threshold value changed.")
+    w("- The **held-out** set (29 resources, seed 2026) and its labels were committed")
+    w("  *before* C1/C2 were implemented. It contains cases the checks should catch and")
+    w("  cases they must not (max 45-49%, off-hours noise ~4%).")
+    w("")
+    w("### Accuracy, misses and safety")
+    w("")
+    rows = [
+        [
+            ds,
+            ver,
+            2 * r.n_resources,
+            _acc(r, rs),
+            _acc(r, sd),
+            len(_outcome_misses(r)),
+            sum(len(v) for _, v in r.safety),
+        ]
+        for (ds, ver), r in runs.items()
+    ]
+    w(
+        _table(
+            [
+                "Set",
+                "Rules",
+                "Decisions",
+                "Rightsizing accuracy",
+                "Shutdown accuracy",
+                "Outcome misses",
+                "Safety violations",
+            ],
+            rows,
+        )
+    )
+    w("")
+    w("### Precision / recall / F1 for the classes C1 and C2 affect")
+    w("")
+    rows = [
+        [
+            ds,
+            ver,
+            _prf(_cls(r, rs, "RECOMMEND")),
+            _prf(_cls(r, rs, "NEEDS_HUMAN_REVIEW")),
+            _prf(_cls(r, sd, "RECOMMEND")),
+            _prf(_cls(r, sd, "NEEDS_HUMAN_REVIEW")),
+        ]
+        for (ds, ver), r in runs.items()
+    ]
+    w(
+        _table(
+            [
+                "Set",
+                "Rules",
+                "Rightsizing RECOMMEND P/R/F1",
+                "Rightsizing REVIEW P/R/F1",
+                "Shutdown RECOMMEND P/R/F1",
+                "Shutdown REVIEW P/R/F1",
+            ],
+            rows,
+        )
+    )
+    w("")
+
+    w("## B. Pre-registered v2 predictions vs actual")
+    w("")
+    w("From `data/heldout/preregistered_predictions_v2.yaml`, committed before C1/C2 existed.")
+    w("")
+    w("### Original set")
+    w("")
+    r1, r2 = runs[("original", "v1")], runs[("original", "v2")]
+    listed = [
+        (x, (x["resource_id"], str(CATEGORY_ALIASES[x["category"]])))
+        for x in v2_preds["original_set_v2"]
+    ]
+    predicted = {key for _, key in listed}
+    rows = []
+    for x, key in listed:
+        actual = r2.outputs[key]
+        rows.append(
+            [
+                x["resource_id"],
+                x["scenario"],
+                key[1],
+                x["label"],
+                r1.outputs[key],
+                x["predicted_v2_output"],
+                actual,
+                "miss" if actual != x["label"] else "correct",
+                "**as predicted**" if actual == x["predicted_v2_output"] else "**DIFFERENT**",
+            ]
+        )
+    for m in _outcome_misses(r2):
+        if (m.resource_id, m.category) not in predicted:
+            rows.append(
+                [
+                    m.resource_id,
+                    m.scenario,
+                    m.category,
+                    m.expected,
+                    r1.outputs[(m.resource_id, m.category)],
+                    "-",
+                    m.actual,
+                    "miss",
+                    "**NOT PREDICTED**",
+                ]
+            )
+    w(
+        _table(
+            [
+                "Resource",
+                "Scenario",
+                "Category",
+                "Label",
+                "v1 output",
+                "Predicted v2",
+                "Actual v2",
+                "v2 vs label",
+                "Prediction",
+            ],
+            rows,
+        )
+    )
+    w("")
+    changed = sorted(k for k in r2.outputs if r2.outputs[k] != r1.outputs[k] and k not in predicted)
+    listing = " (" + ", ".join(f"{a}/{b}" for a, b in changed) + ")" if changed else ""
+    w(
+        f"Original-set outputs that changed v1 -> v2 but were not listed above: **{len(changed)}**"
+        + listing
+        + "."
+    )
+    w("")
+    w("### Held-out set")
+    w("")
+    h1, h2 = runs[("held-out", "v1")], runs[("held-out", "v2")]
+    w(
+        _table(
+            ["Rules", "Predicted", "Actual outcome misses"],
+            [
+                ["v1", v2_preds["heldout_set"]["v1"], len(_outcome_misses(h1))],
+                ["v2", v2_preds["heldout_set"]["v2"], len(_outcome_misses(h2))],
+            ],
+        )
+    )
+    w("")
+
+    w("## C. Held-out set, per scenario")
+    w("")
+    by_sc: dict[str, list[str]] = {}
+    for rid, lab in sorted(h2.labels.items()):
+        by_sc.setdefault(lab["scenario"], []).append(rid)
+    rows = []
+    for sc, ids in sorted(by_sc.items()):
+        lab = h2.labels[ids[0]]
+        row: list[Any] = [sc, len(ids)]
+        for cat, col in [(rs, "expected_rightsizing"), (sd, "expected_shutdown")]:
+            v1o = [h1.outputs[(i, str(cat))] for i in ids]
+            v2o = [h2.outputs[(i, str(cat))] for i in ids]
+            ok1 = sum(o == lab[col] for o in v1o)
+            ok2 = sum(o == lab[col] for o in v2o)
+            row += [
+                lab[col],
+                f"{_counts(v1o)} ({ok1}/{len(ids)})",
+                f"{_counts(v2o)} ({ok2}/{len(ids)})",
+            ]
+        rows.append(row)
+    w(
+        _table(
+            [
+                "Scenario",
+                "n",
+                "RS label",
+                "RS v1 (correct)",
+                "RS v2 (correct)",
+                "SD label",
+                "SD v1 (correct)",
+                "SD v2 (correct)",
+            ],
+            rows,
+        )
+    )
+    w("")
+    for ver, r in [("v1", h1), ("v2", h2)]:
+        for cat, name in [(rs, "Rightsizing"), (sd, "Scheduled shutdown")]:
+            w(f"**Held-out, {ver}, {name}** (rows = label, columns = rule output):")
+            w("")
+            w(_confusion_table(r.categories[cat], OUTCOMES))
+            w("")
+    w("### Held-out misses with evidence")
+    w("")
+    for ver, r in [("v1", h1), ("v2", h2)]:
+        ms = _outcome_misses(r)
+        w(f"**{ver}: {len(ms)} misses.**")
+        w("")
+        if ms:
+            w(
+                _table(
+                    [
+                        "Resource",
+                        "Scenario",
+                        "Category",
+                        "Label",
+                        "Output",
+                        "Mean %",
+                        "p95 %",
+                        "Max %",
+                        "Off-hours mean %",
+                    ],
+                    [
+                        [
+                            m.resource_id,
+                            m.scenario,
+                            m.category,
+                            m.expected,
+                            m.actual,
+                            _f(m.assessment.evidence.mean_cpu_pct, 1),
+                            _f(m.assessment.evidence.p95_cpu_pct, 1),
+                            _f(m.assessment.evidence.max_cpu_pct, 1),
+                            _f(m.assessment.evidence.off_hours_mean_cpu_pct, 1),
+                        ]
+                        for m in ms
+                    ],
+                )
+            )
+            w("")
+    w("**Limitation:** the held-out scenarios and labels were written by the same author who")
+    w("designed C1/C2, knowing what the checks do. They test that the checks behave as")
+    w("intended on new data and do not over-trigger on the chosen near-miss cases; they are")
+    w("not an independent test of whether the checks are the right ones.")
+    w("")
+    return "\n".join(out)
+
+
+def run_all() -> dict[tuple[str, str], EvaluationResult]:
+    v2 = load_thresholds()
+    v1 = as_v1(v2)
+    pricing = load_pricing()
+    return {
+        (ds.name, ver): run_evaluation(th, pricing, ds)
+        for ds in (ORIGINAL, HELDOUT)
+        for ver, th in (("v1", v1), ("v2", v2))
+    }
+
+
+def render_reports(runs: dict[tuple[str, str], EvaluationResult]) -> tuple[str, str]:
+    """Return (frozen v1 report, current v2 report) as markdown."""
+    with open(V2_PREDICTIONS_PATH, encoding="utf-8") as f:
+        v2_preds = yaml.safe_load(f)
+    v1_md = render_markdown(runs[("original", "v1")])
+    detail = render_markdown(
+        runs[("original", "v2")],
+        title="D. Detail: rules v2 on the original set",
+        threshold_changes="C1 and C2 added after v1 (see section A); no threshold value changed",
+        include_predictions=False,
+    ).replace("\n## ", "\n### ")
+    v2_md = "\n".join(
+        [
+            "# Evaluation Report (rules v2)",
+            "",
+            "> **SYNTHETIC DATA.** This report validates rule *logic* on synthetic, deliberately",
+            "> constructed scenarios. It is **not** a measure of real-world accuracy. Prices are",
+            "> illustrative, not current AWS pricing. All savings are *estimated*, "
+            "none *realized*.",
+            "",
+            "Generated by `python tasks.py evaluate`. Frozen v1 results: "
+            "[`evaluation_report_v1.md`](evaluation_report_v1.md).",
+            "",
+            render_comparison(runs, v2_preds),
+            "---",
+            "",
+            "#" + detail,
+        ]
+    )
+    return v1_md, v2_md
+
+
+def write_reports() -> dict[tuple[str, str], EvaluationResult]:
+    runs = run_all()
+    v1_md, v2_md = render_reports(runs)
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    for path, text in ((REPORT_V1_PATH, v1_md), (REPORT_PATH, v2_md)):
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    return runs
 
 
 if __name__ == "__main__":
-    res = write_report()
-    n_miss = sum(1 for m in res.misses if m.category != "evidence_quality")
-    print(
-        f"Wrote {REPORT_PATH} | outcome misses: {n_miss} | "
-        f"safety violations: {sum(len(v) for _, v in res.safety)} (SYNTHETIC)"
-    )
+    for (ds, ver), r in write_reports().items():
+        print(
+            f"{ds:9s} {ver}: outcome misses {len(_outcome_misses(r))}/{2 * r.n_resources}, "
+            f"safety violations {sum(len(v) for _, v in r.safety)}"
+        )
+    print(f"Wrote {REPORT_V1_PATH} and {REPORT_PATH} (SYNTHETIC)")

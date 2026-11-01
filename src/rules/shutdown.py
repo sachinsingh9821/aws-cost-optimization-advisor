@@ -5,6 +5,7 @@ Decision order (first match wins):
   2. environment == prod                     -> NO_ACTION
   3. schedule_eligible is not true           -> NO_ACTION (eligibility is NEVER inferred)
   4. criticality == critical                 -> NEEDS_HUMAN_REVIEW (never auto-scheduled)
+     [v2, C2] off-hours mean CPU > 5% or unknown -> NEEDS_HUMAN_REVIEW (data contradicts tag)
   5. already runs only within the schedule   -> NO_ACTION
   6. otherwise                               -> RECOMMEND
 """
@@ -26,14 +27,18 @@ from src.schema import (
     RiskLevel,
 )
 
-RULE_ID = "SD-1"
-
 
 def assess_shutdown(
     resource: Resource, ev: Evidence, gate: GateResult, thresholds: Thresholds
 ) -> Assessment:
     cfg = thresholds.scheduled_shutdown
-    rule = f"{RULE_ID}: environment != prod AND schedule_eligible == true"
+    off_gate = cfg.review_if_off_hours_cpu_pct
+    rule = (
+        f"{'SD-1' if off_gate is None else 'SD-2'}: environment != prod "
+        "AND schedule_eligible == true"
+    )
+    if off_gate is not None:
+        rule += f"; review if off-hours mean CPU > {off_gate:g}%"
     missing = [] if resource.unit_price_hourly is not None else ["Unit price unknown"]
     base = {
         "id": f"{Category.SCHEDULED_SHUTDOWN}:{resource.resource_id}",
@@ -93,9 +98,28 @@ def assess_shutdown(
     else:
         risk = RiskLevel.LOW
 
+    # C2: off-hours load contradicts the eligibility tag. Unknown off-hours activity is
+    # not assumed to be quiet (missing is not zero).
+    off_review = off_gate is not None and (off is None or off > off_gate)
+    if off_review and not critical:
+        risk = RiskLevel.HIGH
+        risks.append(
+            "Off-hours activity could not be measured."
+            if off is None
+            else f"Off-hours mean CPU {off}% > {off_gate:g}%: the eligibility tag may be wrong."
+        )
+    review = critical or off_review
+
+    if critical:
+        next_step = "Critical resource: owner must explicitly approve any schedule."
+    elif off_review:
+        next_step = "Ask the owner what runs off-hours before applying any schedule."
+    else:
+        next_step = "Apply a Mon-Fri 09:00-19:00 UTC start/stop schedule; confirm with owner."
+
     return Assessment(
         **base,
-        outcome=Outcome.NEEDS_HUMAN_REVIEW if critical else Outcome.RECOMMEND,
+        outcome=Outcome.NEEDS_HUMAN_REVIEW if review else Outcome.RECOMMEND,
         problem=(
             f"{resource.environment} resource tagged schedule-eligible runs 24/7; "
             f"off-hours mean CPU {off}%."
@@ -104,10 +128,6 @@ def assess_shutdown(
         risks=risks,
         savings=savings,
         missing_info=missing,
-        next_step=(
-            "Critical resource: owner must explicitly approve any schedule."
-            if critical
-            else "Apply a Mon-Fri 09:00-19:00 UTC start/stop schedule; confirm with owner."
-        ),
-        human_review_required=critical,
+        next_step=next_step,
+        human_review_required=review,
     )

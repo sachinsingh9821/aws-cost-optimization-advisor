@@ -1,26 +1,63 @@
-"""Evaluation report: reproducibility and predicted-vs-actual matching logic."""
+"""Evaluation reports: reproducibility, frozen v1 results, and prediction matching."""
 
 from __future__ import annotations
+
+import hashlib
 
 import pytest
 
 from src.evaluation.report import (
     REPORT_PATH,
+    REPORT_V1_PATH,
     Miss,
+    _outcome_misses,
     _prediction_rows,
     render_markdown,
-    run_evaluation,
+    render_reports,
+    run_all,
 )
+
+# SHA-256 of the v1 report as first committed (94a4d48 + subset view, 2754e05).
+# v1 results are frozen: no later change may alter them.
+V1_REPORT_SHA256 = "aee37867af64b9b7da1d58c61ee8962f10385f010d09f3910fa64be3bcf50066"
 
 
 @pytest.fixture(scope="module")
-def result():
-    return run_evaluation()
+def runs():
+    return run_all()
 
 
-def test_committed_report_matches_fresh_run(result):
-    """The committed report must be exactly what the current code and data produce."""
-    assert REPORT_PATH.read_text(encoding="utf-8") == render_markdown(result)
+@pytest.fixture(scope="module")
+def result(runs):
+    """v1 on the original set: the run the v1 pre-registered predictions refer to."""
+    return runs[("original", "v1")]
+
+
+def test_committed_reports_match_fresh_run(runs):
+    """Both committed reports must be exactly what the current code and data produce."""
+    v1_md, v2_md = render_reports(runs)
+    assert REPORT_V1_PATH.read_text(encoding="utf-8") == v1_md
+    assert REPORT_PATH.read_text(encoding="utf-8") == v2_md
+
+
+def test_v1_results_are_frozen(runs):
+    v1_md, _ = render_reports(runs)
+    assert hashlib.sha256(v1_md.encode("utf-8")).hexdigest() == V1_REPORT_SHA256
+
+
+def test_v2_report_contains_comparison_and_limitation(runs):
+    _, v2_md = render_reports(runs)
+    assert "## A. Rules v1 vs v2" in v2_md
+    assert "same author who" in v2_md
+    assert "SYNTHETIC DATA" in v2_md
+
+
+def test_rule_versions_are_actually_different(runs):
+    for ds in ("original", "held-out"):
+        v1, v2 = runs[(ds, "v1")], runs[(ds, "v2")]
+        assert v1.outputs.keys() == v2.outputs.keys()
+    held_v1 = {(m.resource_id, m.category) for m in _outcome_misses(runs[("held-out", "v1")])}
+    assert held_v1  # v1 must miss the cases C1/C2 were built for, or the held-out set is moot
 
 
 def test_report_is_labelled_synthetic(result):

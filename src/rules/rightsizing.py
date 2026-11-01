@@ -5,7 +5,8 @@ Decision order (first match wins):
   2. NOT (mean < 10% AND p95 < 30%)                   -> NO_ACTION
   3. No smaller size on the ladder / unknown family   -> NO_ACTION
   4. criticality == critical                          -> NEEDS_HUMAN_REVIEW
-  5. otherwise                                        -> RECOMMEND
+  5. [v2, C1] projected peak (2 x max) >= 100%        -> NEEDS_HUMAN_REVIEW
+  6. otherwise                                        -> RECOMMEND
 
 Critical resources are checked AFTER the utilization signal: a critical resource with
 healthy usage has nothing to review, and flagging it anyway would bury reviewers in noise.
@@ -28,8 +29,6 @@ from src.schema import (
     RiskLevel,
 )
 
-RULE_ID = "RS-1"
-
 
 def assess_rightsizing(
     resource: Resource,
@@ -39,7 +38,13 @@ def assess_rightsizing(
     pricing: Pricing,
 ) -> Assessment:
     cfg = thresholds.rightsizing
-    rule = f"{RULE_ID}: mean CPU < {cfg.max_mean_cpu_pct:g}% AND p95 CPU < {cfg.max_p95_cpu_pct:g}%"
+    peak_gate = cfg.review_if_projected_peak_pct
+    rule = (
+        f"{'RS-1' if peak_gate is None else 'RS-2'}: mean CPU < {cfg.max_mean_cpu_pct:g}% "
+        f"AND p95 CPU < {cfg.max_p95_cpu_pct:g}%"
+    )
+    if peak_gate is not None:
+        rule += f"; review if 2 x max CPU >= {peak_gate:g}%"
     missing = [CPU_ONLY_MISSING]
     if resource.unit_price_hourly is None:
         missing.append("Unit price unknown")
@@ -113,9 +118,31 @@ def assess_rightsizing(
     else:
         risk = RiskLevel.LOW
 
+    # C1: the smaller size cannot serve the observed peak -> a human must decide.
+    peak_review = peak_gate is not None and projected_peak >= peak_gate
+    if peak_review and not critical:
+        risk = RiskLevel.HIGH
+        risks.append(
+            f"Projected peak ~{projected_peak:.1f}% >= {peak_gate:g}%: one size down cannot "
+            "serve the observed peak."
+        )
+    review = critical or peak_review
+
+    if critical:
+        next_step = (
+            f"Owner of this critical resource must approve a move to {proposed.instance_type}."
+        )
+    elif peak_review:
+        next_step = (
+            f"Check what drives the {ev.max_cpu_pct}% peak and whether it can run slower "
+            f"before moving to {proposed.instance_type}."
+        )
+    else:
+        next_step = f"Resize to {proposed.instance_type} in a maintenance window; monitor 7 days."
+
     return Assessment(
         **base,
-        outcome=Outcome.NEEDS_HUMAN_REVIEW if critical else Outcome.RECOMMEND,
+        outcome=Outcome.NEEDS_HUMAN_REVIEW if review else Outcome.RECOMMEND,
         problem=(
             f"{resource.instance_type} averages {ev.mean_cpu_pct}% CPU "
             f"(p95 {ev.p95_cpu_pct}%) over {ev.coverage_days:g} days."
@@ -125,10 +152,6 @@ def assess_rightsizing(
         savings=rightsizing_savings(resource, proposed, thresholds),
         proposed_instance_type=proposed.instance_type,
         missing_info=missing,
-        next_step=(
-            f"Owner of this critical resource must approve a move to {proposed.instance_type}."
-            if critical
-            else f"Resize to {proposed.instance_type} in a maintenance window; monitor 7 days."
-        ),
-        human_review_required=critical,
+        next_step=next_step,
+        human_review_required=review,
     )

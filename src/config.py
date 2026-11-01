@@ -35,6 +35,7 @@ class RightsizingConfig(_Strict):
     max_mean_cpu_pct: float = Field(ge=0, le=100)
     max_p95_cpu_pct: float = Field(ge=0, le=100)
     projected_peak_risk_pct: float = Field(ge=0)
+    review_if_projected_peak_pct: float | None = Field(default=None, gt=0)  # C1; None = v1
 
 
 class ScheduleConfig(_Strict):
@@ -43,6 +44,7 @@ class ScheduleConfig(_Strict):
     on_start_hour: int = Field(ge=0, le=23)
     on_end_hour: int = Field(ge=1, le=24)
     off_hours_activity_risk_pct: float = Field(ge=0, le=100)
+    review_if_off_hours_cpu_pct: float | None = Field(default=None, ge=0, le=100)  # C2; None = v1
 
     @model_validator(mode="after")
     def _check(self) -> ScheduleConfig:
@@ -93,6 +95,20 @@ class Pricing(_Strict):
                 if step.instance_type == instance_type:
                     return steps[i - 1] if i > 0 else None
         return None
+
+
+def as_v1(thresholds: Thresholds) -> Thresholds:
+    """The same thresholds with C1 and C2 disabled: reproduces the v1 rules exactly."""
+    return thresholds.model_copy(
+        update={
+            "rightsizing": thresholds.rightsizing.model_copy(
+                update={"review_if_projected_peak_pct": None}
+            ),
+            "scheduled_shutdown": thresholds.scheduled_shutdown.model_copy(
+                update={"review_if_off_hours_cpu_pct": None}
+            ),
+        }
+    )
 
 
 def load_thresholds(path: Path | None = None) -> Thresholds:

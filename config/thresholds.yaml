@@ -37,6 +37,11 @@ rightsizing:
   max_p95_cpu_pct: 30.0
   # Risk escalates to MEDIUM if projected peak after downsizing (2 x max CPU) exceeds this.
   projected_peak_risk_pct: 80.0
+  # C1 (v2, approved after the v1 evaluation; see docs/EVALUATION.md):
+  # if the projected peak after downsizing (2 x max CPU) reaches this, the smaller size
+  # cannot serve the observed peak -> NEEDS_HUMAN_REVIEW instead of RECOMMEND.
+  # null = disabled (v1 behaviour).
+  review_if_projected_peak_pct: 100.0
 
 scheduled_shutdown:
   # Documented schedule (UTC). Resources run only inside this window.
@@ -48,3 +53,7 @@ scheduled_shutdown:
   # Risk escalates to MEDIUM if mean CPU during off-hours exceeds this
   # (suggests overnight jobs that a shutdown would break).
   off_hours_activity_risk_pct: 5.0
+  # C2 (v2): if off-hours mean CPU exceeds this, the data contradicts the eligibility tag
+  # -> NEEDS_HUMAN_REVIEW instead of RECOMMEND. Eligibility is still never inferred.
+  # null = disabled (v1 behaviour).
+  review_if_off_hours_cpu_pct: 5.0
