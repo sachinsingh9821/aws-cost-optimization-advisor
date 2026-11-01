@@ -1,0 +1,7 @@
+# Runtime dependencies (pinned for reproducible demos)
+numpy==2.4.6
+pandas==3.1.0
+pydantic==2.14.2
+PyYAML==6.0.3
+plotly==7.1.0
+streamlit==1.66.1
