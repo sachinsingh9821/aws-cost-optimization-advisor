@@ -110,3 +110,15 @@ def test_missing_metrics_never_treated_as_idle(thresholds, pricing):
     )
     for a in assess_all([r], thresholds, pricing):
         assert a.outcome == Outcome.INSUFFICIENT_DATA
+
+
+def test_critical_ordering_on_dataset(dataset_assessments):
+    """Critical + low usage -> review; critical + healthy usage -> no action (not noise)."""
+    _, assessments = dataset_assessments
+    manifest = read_manifest()
+    by_scenario: dict[str, set[Outcome]] = {}
+    for a in assessments:
+        if a.category == Category.RIGHTSIZING:
+            by_scenario.setdefault(manifest[a.resource_id], set()).add(a.outcome)
+    assert by_scenario["critical_underutilized"] == {Outcome.NEEDS_HUMAN_REVIEW}
+    assert by_scenario["critical_normal"] == {Outcome.NO_ACTION}

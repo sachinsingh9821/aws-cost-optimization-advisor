@@ -173,20 +173,57 @@ def test_rightsizing_unknown_family_no_action(thresholds, pricing):
     assert "not on the ladder" in a.problem
 
 
-def test_rightsizing_critical_needs_review(thresholds, pricing):
+# --- Critical-resource ordering (deliberate spec deviation, see docs/DESIGN.md) ---------
+# Criticality is checked AFTER the utilization signal, not in the gate:
+#   critical + low usage -> NEEDS_HUMAN_REVIEW   critical + busy -> NO_ACTION
+
+
+@pytest.mark.parametrize("environment", ["prod", "dev"])
+def test_critical_low_usage_needs_human_review(thresholds, pricing, environment):
     a = get(
-        res(criticality="critical", environment="prod"), Category.RIGHTSIZING, thresholds, pricing
+        res(criticality="critical", environment=environment, cpu=[5.0] * 720),
+        Category.RIGHTSIZING,
+        thresholds,
+        pricing,
     )
     assert a.outcome == Outcome.NEEDS_HUMAN_REVIEW
     assert a.human_review_required is True
     assert a.risk_level == RiskLevel.HIGH
+    assert a.savings.monthly_usd == pytest.approx(73.0)  # shown to the reviewer, not actioned
 
 
-def test_rightsizing_critical_healthy_is_no_action(thresholds, pricing):
-    a = get(
-        res(criticality="critical", cpu=[50.0] * 720), Category.RIGHTSIZING, thresholds, pricing
-    )
+@pytest.mark.parametrize(
+    "cpu",
+    [
+        [50.0] * 720,  # steadily busy
+        [10.0] * 720,  # mean exactly at threshold (strict <) -> no signal
+        [2.5] * 648 + [40.0] * 72,  # low mean but bursty: p95 = 40%
+    ],
+    ids=["busy", "mean_at_threshold", "bursty"],
+)
+def test_critical_busy_is_no_action_not_review(thresholds, pricing, cpu):
+    a = get(res(criticality="critical", cpu=cpu), Category.RIGHTSIZING, thresholds, pricing)
     assert a.outcome == Outcome.NO_ACTION
+    assert a.human_review_required is False
+
+
+def test_critical_schedule_eligible_needs_review_for_shutdown(thresholds, pricing):
+    r = res(criticality="critical", environment="test", schedule_eligible=True)
+    a = get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing)
+    assert a.outcome == Outcome.NEEDS_HUMAN_REVIEW
+    assert a.human_review_required is True
+
+
+def test_critical_without_shutdown_signal_is_no_action(thresholds, pricing):
+    # Not tagged eligible -> no shutdown signal -> nothing to review.
+    r = res(criticality="critical", environment="dev", schedule_eligible=False)
+    assert get(r, Category.SCHEDULED_SHUTDOWN, thresholds, pricing).outcome == Outcome.NO_ACTION
+
+
+def test_critical_with_bad_data_is_insufficient_not_review(thresholds, pricing):
+    # The data-quality gate still runs first, even for critical resources.
+    r = res(criticality="critical", schedule_eligible=True, days=7)
+    assert set(outcomes(r, thresholds, pricing).values()) == {Outcome.INSUFFICIENT_DATA}
 
 
 def test_rightsizing_prod_is_medium_risk(thresholds, pricing):
