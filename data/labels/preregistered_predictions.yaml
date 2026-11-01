@@ -1,0 +1,66 @@
+# PRE-REGISTERED PREDICTIONS, written and committed BEFORE the evaluation code existed
+# and before any run compared rule output with ground-truth labels.
+#
+# What the author already knew when writing this (disclosed so the predictions can be
+# judged fairly):
+#   - Per-scenario CPU statistics from the generator sanity check (Checkpoint 1), e.g.
+#     amb_weekly_batch mean 5.0% / p95 4.4% / max 96.3%; amb_borderline_mean mean 11.0%.
+#   - One smoke run (Checkpoint 2) printed TOTAL outcome counts per category, without
+#     any per-resource comparison to labels: rightsizing RECOMMEND 22 / NO_ACTION 46 /
+#     INSUFFICIENT_DATA 15 / NEEDS_HUMAN_REVIEW 5; shutdown RECOMMEND 15 / NO_ACTION 57 /
+#     INSUFFICIENT_DATA 15 / NEEDS_HUMAN_REVIEW 1.
+#   - The rule code and thresholds (rules were written to the spec, not to the labels).
+#
+# The evaluation report reads this file and renders a "Predicted vs actual misses" table.
+
+predicted_misses:
+  - id: P1
+    resource_id: ec2-0057
+    scenario: amb_weekly_batch
+    category: rightsizing
+    expected_label: NO_ACTION
+    predicted_rule_output: RECOMMEND
+    error_type: false positive (RECOMMEND)
+    reasoning: >-
+      The 4 h Sunday batch at ~95% CPU is only 2.4% of hours, so it sits above the 95th
+      percentile: p95 is ~4.4% and the mean ~5%, both under threshold. The projected-peak
+      check (2 x max > 80%) only raises risk to MEDIUM; it does not block the
+      recommendation. Known blind spot of p95.
+
+  - id: P2
+    resource_id: ec2-0027
+    scenario: amb_borderline_mean
+    category: rightsizing
+    expected_label: RECOMMEND
+    predicted_rule_output: NO_ACTION
+    error_type: false negative (RECOMMEND)
+    reasoning: >-
+      Mean ~11% fails the strict "mean < 10%" condition even though p95 ~13% means the
+      downsized instance would sit at ~22% mean / ~27% p95. Cost of a hard mean cutoff.
+
+  - id: P3
+    resource_id: ec2-0017
+    scenario: amb_dev_overnight_jobs
+    category: scheduled_shutdown
+    expected_label: NEEDS_HUMAN_REVIEW
+    predicted_rule_output: RECOMMEND
+    error_type: >-
+      false positive for RECOMMEND and false negative for NEEDS_HUMAN_REVIEW
+    reasoning: >-
+      SD-1 follows the spec (non-prod AND tagged eligible). Off-hours CPU from the nightly
+      01:00-04:00 jobs raises risk to MEDIUM but does not change the outcome, because
+      the rule never second-guesses the eligibility tag.
+
+# Explicit claims about everything else, so that unpredicted misses are visible:
+other_predictions:
+  additional_outcome_misses: none expected
+  rightsizing_note: >-
+    P1 and P2 cancel out in the RECOMMEND count (22 predicted = 22 labelled), which is
+    why the smoke-run totals matched the label totals; totals cannot reveal them.
+  evidence_quality_misses: >-
+    none expected (ec2-0005 amb_exact_14_days and ec2-0030 amb_staleness_47h -> MEDIUM;
+    all gate failures -> LOW; everything else -> HIGH)
+  savings_error: >-
+    all hand-computed cases within 0.0001 USD absolute (engine rounds to 4 decimals);
+    both unpriced cases produce no number
+  safety_violations: 0
