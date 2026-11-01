@@ -1,0 +1,50 @@
+# Detection thresholds — the single source of truth for every rule constant.
+# These are STARTING VALUES chosen from first principles (see docs/CALCULATIONS_AND_DATA.md),
+# not tuned to the evaluation set. Any change must be logged in docs/EVALUATION.md
+# ("Threshold change log") with the reason.
+
+analysis:
+  # Fixed "now" for the analysis so results are deterministic and reproducible.
+  # Using wall-clock time would make staleness depend on when you run the code.
+  as_of: "2026-10-31T00:00:00Z"
+  # Hours per month used to convert hourly prices to monthly figures (24 * 365 / 12).
+  hours_per_month: 730
+
+data_quality:
+  # Metrics older than this mean we cannot trust that the resource still looks this way.
+  # 48h tolerates a weekend collection gap but not a resource that silently disappeared.
+  max_staleness_hours: 48
+  # Minimum observation window. 14 days = two full weekly cycles, so weekday/weekend
+  # patterns are seen at least twice.
+  min_coverage_days: 14
+  # Minimum fraction of expected hourly points that are present (non-null).
+  # Missing points are never treated as zero CPU.
+  min_completeness: 0.90
+
+evidence_quality:
+  # HIGH: a full month (4 weekly cycles) with almost no gaps, and fresh.
+  high_min_days: 28
+  high_min_completeness: 0.97
+  high_max_staleness_hours: 24
+  # MEDIUM: passes the data-quality gate but not the HIGH bar.
+  # LOW: fails the gate. LOW evidence never produces an actionable recommendation.
+
+rightsizing:
+  # Both conditions must hold. One size down in the same family halves vCPUs, so
+  # CPU% roughly doubles: mean < 10% -> ~<20%, p95 < 30% -> ~<60% after downsizing,
+  # leaving headroom below a typical 70-80% alarm level.
+  max_mean_cpu_pct: 10.0
+  max_p95_cpu_pct: 30.0
+  # Risk escalates to MEDIUM if projected peak after downsizing (2 x max CPU) exceeds this.
+  projected_peak_risk_pct: 80.0
+
+scheduled_shutdown:
+  # Documented schedule (UTC). Resources run only inside this window.
+  # Eligibility comes ONLY from the schedule_eligible tag; it is never inferred.
+  timezone: "UTC"
+  on_days: [0, 1, 2, 3, 4]   # Monday=0 ... Friday=4
+  on_start_hour: 9           # inclusive
+  on_end_hour: 19            # exclusive -> 09:00-19:00 = 10 h/day, 50 h/week
+  # Risk escalates to MEDIUM if mean CPU during off-hours exceeds this
+  # (suggests overnight jobs that a shutdown would break).
+  off_hours_activity_risk_pct: 5.0

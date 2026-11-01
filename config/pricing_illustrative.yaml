@@ -1,0 +1,30 @@
+# ILLUSTRATIVE PRICES — NOT CURRENT AWS PRICING.
+# Round numbers chosen so hand calculations are easy to check. They only keep the
+# relative ordering realistic (each size up doubles vCPU and price). They are used
+# for synthetic data and for the instance-size ladder. Region does not change price
+# in this model (documented simplification).
+label: "illustrative, not current AWS pricing"
+currency: "USD"
+unit: "per instance-hour"
+
+# Ladder: sizes are ordered smallest -> largest within each family.
+# Downsizing proposes exactly one step down in the same family.
+families:
+  m5:
+    - { size: large,   instance_type: m5.large,   hourly_price: 0.10 }
+    - { size: xlarge,  instance_type: m5.xlarge,  hourly_price: 0.20 }
+    - { size: 2xlarge, instance_type: m5.2xlarge, hourly_price: 0.40 }
+    - { size: 4xlarge, instance_type: m5.4xlarge, hourly_price: 0.80 }
+  c5:
+    - { size: large,   instance_type: c5.large,   hourly_price: 0.09 }
+    - { size: xlarge,  instance_type: c5.xlarge,  hourly_price: 0.18 }
+    - { size: 2xlarge, instance_type: c5.2xlarge, hourly_price: 0.36 }
+    - { size: 4xlarge, instance_type: c5.4xlarge, hourly_price: 0.72 }
+  r5:
+    - { size: large,   instance_type: r5.large,   hourly_price: 0.13 }
+    - { size: xlarge,  instance_type: r5.xlarge,  hourly_price: 0.26 }
+    - { size: 2xlarge, instance_type: r5.2xlarge, hourly_price: 0.52 }
+  db.m5:
+    - { size: large,   instance_type: db.m5.large,   hourly_price: 0.18 }
+    - { size: xlarge,  instance_type: db.m5.xlarge,  hourly_price: 0.36 }
+    - { size: 2xlarge, instance_type: db.m5.2xlarge, hourly_price: 0.72 }
