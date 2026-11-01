@@ -184,6 +184,132 @@ SCENARIOS: list[Scenario] = [
 
 
 # ---------------------------------------------------------------------------
+# HELD-OUT scenarios (written before rule changes C1/C2 were implemented).
+# Both cases the new checks SHOULD catch and cases they should NOT catch, to measure
+# over-triggering. Different seed and ID prefix; never used to design thresholds.
+# ---------------------------------------------------------------------------
+
+HELDOUT_SEED = 2026
+HELDOUT_OUT_DIR = REPO_ROOT / "data" / "heldout"
+
+
+def _daily_peak_hour(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+    """Idle, plus one hour every day (14:00) at 60-70%: 3.3% of hours, under p95's reach."""
+    cpu = 3.0 + rng.normal(0, 0.8, hod.size)
+    peak = hod == 14
+    cpu[peak] = rng.uniform(60, 70, peak.sum())
+    return cpu
+
+
+def _single_burst(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+    """Idle, plus one 6-hour burst at ~90% somewhere in the window (month-end job)."""
+    cpu = 3.0 + rng.normal(0, 0.8, hod.size)
+    start = int(rng.integers(24, hod.size - 30))
+    cpu[start : start + 6] = 90.0 + rng.normal(0, 2, 6)
+    return cpu
+
+
+def _twice_weekly_batch(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+    """Idle, plus Tue and Thu 03:00-06:00 at ~80% (6 of 168 weekly hours = 3.6%)."""
+    cpu = 3.0 + rng.normal(0, 0.8, hod.size)
+    batch = np.isin(dow, [1, 3]) & (hod >= 3) & (hod < 6)
+    cpu[batch] = 80.0 + rng.normal(0, 2, batch.sum())
+    return cpu
+
+
+def _moderate_max(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+    """Idle with 3% of hours at 35-45%: projected peak <= 90%, which still fits."""
+    cpu = 4.0 + rng.normal(0, 0.8, hod.size)
+    bumps = _exact_mask(rng, hod.size, 0.03)
+    cpu[bumps] = rng.uniform(35, 45, bumps.sum())
+    return cpu
+
+
+def _fixed_max(value: float) -> Pattern:
+    """Idle with exactly 5 hours at ``value``% (boundary cases for C1)."""
+
+    def pattern(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+        cpu = np.clip(3.0 + rng.normal(0, 0.8, hod.size), 0.5, 8.0)
+        cpu[rng.choice(hod.size, size=5, replace=False)] = value
+        return cpu
+
+    return pattern
+
+
+def _workhours_nightly_etl(
+    rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray
+) -> np.ndarray:
+    """Work-hours usage plus a nightly 02:00-04:00 ETL at ~60% every day."""
+    cpu = _workhours(rng, hod, dow)
+    etl = (hod >= 2) & (hod < 4)
+    cpu[etl] = 60.0 + rng.normal(0, 3, etl.sum())
+    return cpu
+
+
+def _workhours_weekend_jobs(
+    rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray
+) -> np.ndarray:
+    """Work-hours usage plus Saturday 08:00-18:00 jobs at ~60%."""
+    cpu = _workhours(rng, hod, dow)
+    sat = (dow == 5) & (hod >= 8) & (hod < 18)
+    cpu[sat] = 60.0 + rng.normal(0, 3, sat.sum())
+    return cpu
+
+
+def _flat_moderate(rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray) -> np.ndarray:
+    """Flat ~20% around the clock: genuinely used off-hours."""
+    return 20.0 + rng.normal(0, 2, hod.size)
+
+
+def _workhours_offhours_noise_4(
+    rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray
+) -> np.ndarray:
+    """Work-hours usage with off-hours idle baseline ~4% (agent/OS noise, under 5%)."""
+    on = (dow < 5) & (hod >= 9) & (hod < 19)
+    cpu = 4.0 + rng.normal(0, 0.4, hod.size)
+    cpu[on] = rng.uniform(30, 60) + rng.normal(0, 6, on.sum())
+    return cpu
+
+
+def _workhours_weekly_blip(
+    rng: np.random.Generator, hod: np.ndarray, dow: np.ndarray
+) -> np.ndarray:
+    """Quiet nights except one 30% hour per week (Sunday 23:00, e.g. a health check)."""
+    cpu = _workhours(rng, hod, dow)
+    blip = (dow == 6) & (hod == 23)
+    cpu[blip] = 30.0
+    return cpu
+
+
+NONPROD = ("dev", "test")
+HELDOUT_SCENARIOS: list[Scenario] = [
+    # C1 SHOULD catch: idle on average, but peaks that one size down cannot serve.
+    Scenario("ho_daily_peak_hour", 3, _daily_peak_hour),
+    Scenario("ho_single_month_end_burst", 2, _single_burst),
+    Scenario("ho_twice_weekly_batch", 2, _twice_weekly_batch),
+    Scenario("ho_max_exactly_50", 1, _fixed_max(50.0)),
+    # C1 should NOT catch: peaks that still fit after halving.
+    Scenario("ho_moderate_max", 3, _moderate_max),
+    Scenario("ho_max_49", 1, _fixed_max(49.0)),
+    Scenario("ho_plain_idle", 3, _low),
+    # C2 SHOULD catch: tagged eligible, but real off-hours load.
+    Scenario("ho_dev_nightly_etl", 3, _workhours_nightly_etl, NONPROD, schedule_eligible=True),
+    Scenario("ho_dev_weekend_jobs", 2, _workhours_weekend_jobs, NONPROD, schedule_eligible=True),
+    Scenario("ho_test_flat_20pct", 2, _flat_moderate, NONPROD, schedule_eligible=True),
+    # C2 should NOT catch: off-hours noise under 5%.
+    Scenario("ho_dev_quiet_nights", 3, _workhours, NONPROD, schedule_eligible=True),
+    Scenario(
+        "ho_dev_offhours_noise_4pct",
+        2,
+        _workhours_offhours_noise_4,
+        NONPROD,
+        schedule_eligible=True,
+    ),
+    Scenario("ho_dev_weekly_blip", 2, _workhours_weekly_blip, NONPROD, schedule_eligible=True),
+]
+
+
+# ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
 
@@ -248,7 +374,11 @@ def _make_record(
 
 
 def generate(
-    seed: int = SEED, thresholds: Thresholds | None = None, pricing: Pricing | None = None
+    seed: int = SEED,
+    thresholds: Thresholds | None = None,
+    pricing: Pricing | None = None,
+    scenarios: list[Scenario] | None = None,
+    id_prefix: str = "",
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """Return (resource records, [(resource_id, scenario)]). Same seed -> same output."""
     thresholds = thresholds or load_thresholds()
@@ -257,7 +387,7 @@ def generate(
     as_of = thresholds.analysis.as_of
 
     drafts: list[tuple[str, dict[str, Any]]] = []
-    for sc in SCENARIOS:
+    for sc in scenarios if scenarios is not None else SCENARIOS:
         for _ in range(sc.count):
             drafts.append((sc.name, _make_record(rng, sc, as_of, pricing)))
 
@@ -269,14 +399,19 @@ def generate(
         scenario, rec = drafts[idx]
         counters[rec["service"]] += 1
         prefix = "ec2" if rec["service"] == "EC2" else "rds"
-        rid = f"{prefix}-{counters[rec['service']]:04d}"
+        rid = f"{id_prefix}{prefix}-{counters[rec['service']]:04d}"
         records.append({"resource_id": rid, **rec})
         manifest.append((rid, scenario))
     return records, manifest
 
 
-def write_dataset(out_dir: Path = OUT_DIR, seed: int = SEED) -> tuple[Path, Path]:
-    records, manifest = generate(seed)
+def write_dataset(
+    out_dir: Path = OUT_DIR,
+    seed: int = SEED,
+    scenarios: list[Scenario] | None = None,
+    id_prefix: str = "",
+) -> tuple[Path, Path]:
+    records, manifest = generate(seed, scenarios=scenarios, id_prefix=id_prefix)
     out_dir.mkdir(parents=True, exist_ok=True)
     data_path = out_dir / "resources.json"
     metadata = {
@@ -305,3 +440,5 @@ def write_dataset(out_dir: Path = OUT_DIR, seed: int = SEED) -> tuple[Path, Path
 if __name__ == "__main__":
     data_path, manifest_path = write_dataset()
     print(f"Wrote {data_path} and {manifest_path} (SYNTHETIC, seed={SEED})")
+    ho_data, ho_manifest = write_dataset(HELDOUT_OUT_DIR, HELDOUT_SEED, HELDOUT_SCENARIOS, "ho-")
+    print(f"Wrote {ho_data} and {ho_manifest} (SYNTHETIC held-out, seed={HELDOUT_SEED})")

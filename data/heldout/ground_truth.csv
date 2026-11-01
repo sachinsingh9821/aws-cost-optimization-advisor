@@ -1,0 +1,30 @@
+resource_id,scenario,expected_rightsizing,expected_shutdown,expected_evidence_quality,ambiguous,rationale
+ho-ec2-0001,ho_dev_weekend_jobs,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,Saturday jobs at ~60% would break under the schedule; review.
+ho-ec2-0002,ho_max_exactly_50,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,true,BOUNDARY. Peak exactly 50% -> ~100% after halving: no headroom at all at peak.
+ho-ec2-0003,ho_dev_nightly_etl,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,"Tagged eligible, but a nightly ETL at ~60% would be killed by an off-hours shutdown. Tag may be stale; review."
+ho-ec2-0004,ho_dev_weekend_jobs,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,Saturday jobs at ~60% would break under the schedule; review.
+ho-ec2-0005,ho_dev_nightly_etl,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,"Tagged eligible, but a nightly ETL at ~60% would be killed by an off-hours shutdown. Tag may be stale; review."
+ho-ec2-0006,ho_test_flat_20pct,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,Tagged eligible but used ~20% around the clock: someone relies on it off-hours.
+ho-ec2-0007,ho_plain_idle,RECOMMEND,NO_ACTION,HIGH,false,"Control: plainly idle, peak < 10%. Downsize."
+ho-ec2-0008,ho_dev_quiet_nights,NO_ACTION,RECOMMEND,HIGH,false,"Control: busy work hours, idle nights. Schedule it."
+ho-ec2-0009,ho_dev_quiet_nights,NO_ACTION,RECOMMEND,HIGH,false,"Control: busy work hours, idle nights. Schedule it."
+ho-ec2-0010,ho_twice_weekly_batch,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,"Tue/Thu batch at ~80-86% (3.6% of hours): invisible to p95, exceeds capacity after halving."
+ho-ec2-0011,ho_single_month_end_burst,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,One 6 h burst at ~90% (month-end job). Smaller size cannot serve it; review.
+ho-ec2-0012,ho_dev_nightly_etl,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,"Tagged eligible, but a nightly ETL at ~60% would be killed by an off-hours shutdown. Tag may be stale; review."
+ho-ec2-0013,ho_single_month_end_burst,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,One 6 h burst at ~90% (month-end job). Smaller size cannot serve it; review.
+ho-ec2-0014,ho_daily_peak_hour,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,"Idle on average, but a daily 60-70% hour would hit ~120-140% after halving. A human must check whether that hour can tolerate slowdown."
+ho-ec2-0015,ho_moderate_max,RECOMMEND,NO_ACTION,HIGH,false,Idle with occasional 35-45% hours: ~70-90% after halving still fits. Safe to downsize; C1 must NOT trigger.
+ho-ec2-0016,ho_daily_peak_hour,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,"Idle on average, but a daily 60-70% hour would hit ~120-140% after halving. A human must check whether that hour can tolerate slowdown."
+ho-ec2-0017,ho_test_flat_20pct,NO_ACTION,NEEDS_HUMAN_REVIEW,HIGH,false,Tagged eligible but used ~20% around the clock: someone relies on it off-hours.
+ho-ec2-0018,ho_dev_offhours_noise_4pct,NO_ACTION,RECOMMEND,HIGH,true,"BOUNDARY. Off-hours ~4% is OS/agent noise, not work; C2 must NOT trigger."
+ho-ec2-0019,ho_dev_offhours_noise_4pct,NO_ACTION,RECOMMEND,HIGH,true,"BOUNDARY. Off-hours ~4% is OS/agent noise, not work; C2 must NOT trigger."
+ho-ec2-0020,ho_dev_weekly_blip,NO_ACTION,RECOMMEND,HIGH,false,One 30% hour per week (health check) does not justify running 118 h/week; C2 must NOT trigger.
+ho-ec2-0021,ho_dev_quiet_nights,NO_ACTION,RECOMMEND,HIGH,false,"Control: busy work hours, idle nights. Schedule it."
+ho-ec2-0022,ho_moderate_max,RECOMMEND,NO_ACTION,HIGH,false,Idle with occasional 35-45% hours: ~70-90% after halving still fits. Safe to downsize; C1 must NOT trigger.
+ho-ec2-0023,ho_moderate_max,RECOMMEND,NO_ACTION,HIGH,false,Idle with occasional 35-45% hours: ~70-90% after halving still fits. Safe to downsize; C1 must NOT trigger.
+ho-ec2-0024,ho_dev_weekly_blip,NO_ACTION,RECOMMEND,HIGH,false,One 30% hour per week (health check) does not justify running 118 h/week; C2 must NOT trigger.
+ho-ec2-0025,ho_max_49,RECOMMEND,NO_ACTION,HIGH,true,BOUNDARY. Peak 49% -> ~98% after halving: tight but fits; C1 must NOT trigger.
+ho-ec2-0026,ho_daily_peak_hour,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,"Idle on average, but a daily 60-70% hour would hit ~120-140% after halving. A human must check whether that hour can tolerate slowdown."
+ho-ec2-0027,ho_twice_weekly_batch,NEEDS_HUMAN_REVIEW,NO_ACTION,HIGH,false,"Tue/Thu batch at ~80-86% (3.6% of hours): invisible to p95, exceeds capacity after halving."
+ho-ec2-0028,ho_plain_idle,RECOMMEND,NO_ACTION,HIGH,false,"Control: plainly idle, peak < 10%. Downsize."
+ho-ec2-0029,ho_plain_idle,RECOMMEND,NO_ACTION,HIGH,false,"Control: plainly idle, peak < 10%. Downsize."

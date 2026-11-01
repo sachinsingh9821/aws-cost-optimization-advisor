@@ -1,0 +1,63 @@
+# PRE-REGISTERED PREDICTIONS for rules v2 (C1 + C2), written and committed together with
+# the held-out scenarios and labels, BEFORE C1/C2 were implemented.
+#
+# C1 (rightsizing): if projected peak (2 x max CPU) >= 100%  -> NEEDS_HUMAN_REVIEW
+# C2 (shutdown):    if off-hours mean CPU > 5%               -> NEEDS_HUMAN_REVIEW
+#
+# Prior knowledge: v1 results on the original set (reports/evaluation_report.md),
+# original-set CPU statistics from the Checkpoint 1 sanity check, and held-out CPU
+# statistics from the held-out generator sanity check (data only, no rule run).
+
+original_set_v2:
+  - resource_id: ec2-0057
+    scenario: amb_weekly_batch
+    category: rightsizing
+    label: NO_ACTION
+    v1_output: RECOMMEND
+    predicted_v2_output: NEEDS_HUMAN_REVIEW
+    still_a_miss: true
+    note: >-
+      C1 fires (2 x 96.3% = 192.5%). Label is NO_ACTION, so this stays a miss, but it
+      moves from an actionable FP to a human-review FP, which is a safer error.
+  - resource_id: ec2-0027
+    scenario: amb_borderline_mean
+    category: rightsizing
+    label: RECOMMEND
+    v1_output: NO_ACTION
+    predicted_v2_output: NO_ACTION
+    still_a_miss: true
+    note: C3 rejected; the 10% mean cutoff is unchanged.
+  - resource_id: ec2-0017
+    scenario: amb_dev_overnight_jobs
+    category: scheduled_shutdown
+    label: NEEDS_HUMAN_REVIEW
+    v1_output: RECOMMEND
+    predicted_v2_output: NEEDS_HUMAN_REVIEW
+    still_a_miss: false
+    note: C2 fires (off-hours mean 13.6% > 5%). Fixed.
+  - resource_id: ec2-0070
+    scenario: underutilized_schedulable
+    category: scheduled_shutdown
+    label: RECOMMEND
+    v1_output: RECOMMEND
+    predicted_v2_output: NEEDS_HUMAN_REVIEW
+    still_a_miss: true
+    note: >-
+      NEW MISS (over-trigger). This idle box's flat baseline is ~5.8% CPU at all hours,
+      so its off-hours mean exceeds 5% without any off-hours *work*. An absolute 5%
+      threshold cannot tell idle baseline from jobs.
+
+original_set_v2_summary: >-
+  Rightsizing: P1 output changes but stays a miss; P2 unchanged -> still 86/88.
+  Shutdown: P3 fixed, ec2-0070 newly missed -> still 87/88. No other original-set
+  outcome changes (no other rightsizing RECOMMEND has max >= 50%; no other shutdown
+  RECOMMEND has off-hours mean > 5%).
+
+heldout_set:
+  v1: >-
+    15 misses of 58 decisions: all 8 C1-should-catch resources get rightsizing RECOMMEND
+    (label NEEDS_HUMAN_REVIEW) and all 7 C2-should-catch resources get shutdown
+    RECOMMEND. All "should NOT catch" cases correct.
+  v2: >-
+    0 misses. Boundary cases: ho_max_exactly_50 (2 x 50 = 100 >= 100) -> review;
+    ho_max_49 (98) -> RECOMMEND; ho_dev_offhours_noise_4pct (off-hours 4.00%) -> RECOMMEND.

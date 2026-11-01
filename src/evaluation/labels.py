@@ -23,6 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "data" / "synthetic" / "scenario_manifest.csv"
 LABELS_PATH = REPO_ROOT / "data" / "labels" / "ground_truth.csv"
 EXPECTED_SAVINGS_PATH = REPO_ROOT / "data" / "labels" / "expected_savings.csv"
+HELDOUT_MANIFEST_PATH = REPO_ROOT / "data" / "heldout" / "scenario_manifest.csv"
+HELDOUT_LABELS_PATH = REPO_ROOT / "data" / "heldout" / "ground_truth.csv"
 
 OUTCOMES = ("RECOMMEND", "NO_ACTION", "INSUFFICIENT_DATA", "NEEDS_HUMAN_REVIEW")
 QUALITIES = ("HIGH", "MEDIUM", "LOW")
@@ -224,15 +226,109 @@ SCENARIO_LABELS: dict[str, ScenarioLabel] = {
 }
 
 
+# HELD-OUT labels: written with the held-out scenarios, BEFORE changes C1/C2 were coded.
+# "Should catch" cases expect NEEDS_HUMAN_REVIEW; "should not catch" cases expect the
+# v1 outcome, so over-triggering by the new checks shows up as a miss.
+HELDOUT_SCENARIO_LABELS: dict[str, ScenarioLabel] = {
+    "ho_daily_peak_hour": ScenarioLabel(
+        HUM,
+        NOA,
+        "HIGH",
+        False,
+        "Idle on average, but a daily 60-70% hour would hit ~120-140% after halving. "
+        "A human must check whether that hour can tolerate slowdown.",
+    ),
+    "ho_single_month_end_burst": ScenarioLabel(
+        HUM,
+        NOA,
+        "HIGH",
+        False,
+        "One 6 h burst at ~90% (month-end job). Smaller size cannot serve it; review.",
+    ),
+    "ho_twice_weekly_batch": ScenarioLabel(
+        HUM,
+        NOA,
+        "HIGH",
+        False,
+        "Tue/Thu batch at ~80-86% (3.6% of hours): invisible to p95, exceeds capacity "
+        "after halving.",
+    ),
+    "ho_max_exactly_50": ScenarioLabel(
+        HUM,
+        NOA,
+        "HIGH",
+        True,
+        "BOUNDARY. Peak exactly 50% -> ~100% after halving: no headroom at all at peak.",
+    ),
+    "ho_moderate_max": ScenarioLabel(
+        REC,
+        NOA,
+        "HIGH",
+        False,
+        "Idle with occasional 35-45% hours: ~70-90% after halving still fits. Safe to "
+        "downsize; C1 must NOT trigger.",
+    ),
+    "ho_max_49": ScenarioLabel(
+        REC,
+        NOA,
+        "HIGH",
+        True,
+        "BOUNDARY. Peak 49% -> ~98% after halving: tight but fits; C1 must NOT trigger.",
+    ),
+    "ho_plain_idle": ScenarioLabel(
+        REC, NOA, "HIGH", False, "Control: plainly idle, peak < 10%. Downsize."
+    ),
+    "ho_dev_nightly_etl": ScenarioLabel(
+        NOA,
+        HUM,
+        "HIGH",
+        False,
+        "Tagged eligible, but a nightly ETL at ~60% would be killed by an off-hours "
+        "shutdown. Tag may be stale; review.",
+    ),
+    "ho_dev_weekend_jobs": ScenarioLabel(
+        NOA, HUM, "HIGH", False, "Saturday jobs at ~60% would break under the schedule; review."
+    ),
+    "ho_test_flat_20pct": ScenarioLabel(
+        NOA,
+        HUM,
+        "HIGH",
+        False,
+        "Tagged eligible but used ~20% around the clock: someone relies on it off-hours.",
+    ),
+    "ho_dev_quiet_nights": ScenarioLabel(
+        NOA, REC, "HIGH", False, "Control: busy work hours, idle nights. Schedule it."
+    ),
+    "ho_dev_offhours_noise_4pct": ScenarioLabel(
+        NOA,
+        REC,
+        "HIGH",
+        True,
+        "BOUNDARY. Off-hours ~4% is OS/agent noise, not work; C2 must NOT trigger.",
+    ),
+    "ho_dev_weekly_blip": ScenarioLabel(
+        NOA,
+        REC,
+        "HIGH",
+        False,
+        "One 30% hour per week (health check) does not justify running 118 h/week; "
+        "C2 must NOT trigger.",
+    ),
+}
+
+
 def read_manifest(path: Path = MANIFEST_PATH) -> dict[str, str]:
     with open(path, encoding="utf-8") as f:
         return {row["resource_id"]: row["scenario"] for row in csv.DictReader(f)}
 
 
-def build_ground_truth(manifest: dict[str, str]) -> list[dict[str, str]]:
+def build_ground_truth(
+    manifest: dict[str, str], scenario_labels: dict[str, ScenarioLabel] | None = None
+) -> list[dict[str, str]]:
+    scenario_labels = SCENARIO_LABELS if scenario_labels is None else scenario_labels
     rows = []
     for rid, scenario in sorted(manifest.items()):
-        lab = SCENARIO_LABELS[scenario]  # KeyError = unlabelled scenario, fail loudly
+        lab = scenario_labels[scenario]  # KeyError = unlabelled scenario, fail loudly
         rows.append(
             {
                 "resource_id": rid,
@@ -247,8 +343,12 @@ def build_ground_truth(manifest: dict[str, str]) -> list[dict[str, str]]:
     return rows
 
 
-def write_ground_truth(path: Path = LABELS_PATH) -> Path:
-    rows = build_ground_truth(read_manifest())
+def write_ground_truth(
+    path: Path = LABELS_PATH,
+    manifest_path: Path = MANIFEST_PATH,
+    scenario_labels: dict[str, ScenarioLabel] | None = None,
+) -> Path:
+    rows = build_ground_truth(read_manifest(manifest_path), scenario_labels)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]), lineterminator="\n")
@@ -269,3 +369,7 @@ def read_expected_savings(path: Path = EXPECTED_SAVINGS_PATH) -> list[dict[str, 
 
 if __name__ == "__main__":
     print(f"Wrote {write_ground_truth()}")
+    print(
+        "Wrote "
+        f"{write_ground_truth(HELDOUT_LABELS_PATH, HELDOUT_MANIFEST_PATH, HELDOUT_SCENARIO_LABELS)}"
+    )
