@@ -9,6 +9,8 @@ proves its rules with a label-first, pre-registered evaluation.**
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Data](https://img.shields.io/badge/data-100%25%20synthetic-orange)
 
+**[Live demo](https://aws-cost-advisor.streamlit.app/)**
+
 > **SYNTHETIC DATA ONLY.** Every resource, metric and price is generated from a fixed seed.
 > Prices are *illustrative, not current AWS pricing*. All savings are *estimated*; none are
 > *realized*. The MVP makes zero AWS or network calls.
