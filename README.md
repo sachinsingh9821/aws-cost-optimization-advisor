@@ -4,9 +4,8 @@
 shutdowns only when the metrics justify it, says `INSUFFICIENT_DATA` when they don't, and
 proves its rules with a label-first, pre-registered evaluation.**
 
-<!-- Badges: enable after the repo is pushed (replace OWNER/REPO).
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
--->
+[![CI](https://github.com/sachinsingh9821/aws-cost-optimization-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/sachinsingh9821/aws-cost-optimization-advisor/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](https://github.com/sachinsingh9821/aws-cost-optimization-advisor/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Data](https://img.shields.io/badge/data-100%25%20synthetic-orange)
 
